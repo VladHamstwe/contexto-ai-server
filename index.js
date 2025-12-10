@@ -1,46 +1,80 @@
 import express from "express";
 import cors from "cors";
+import bodyParser from "body-parser";
 import OpenAI from "openai";
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(bodyParser.json());
 
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_KEY
+    apiKey: process.env.OPENAI_KEY
 });
 
+// --- SECRET WORD ----
+const SECRET_WORD = "apple"; // хочеш — зроблю випадковим
+
+// --- КЕШ ДЛЯ ВЕКТОРІВ ---
+const embedCache = {};
+
+// Створення embedding
 async function getEmbedding(word) {
-  const res = await client.embeddings.create({
-    model: "text-embedding-3-small",
-    input: word
-  });
-  return res.data[0].embedding;
+    if (embedCache[word]) return embedCache[word];
+
+    const response = await client.embeddings.create({
+        model: "text-embedding-3-small",
+        input: word
+    });
+
+    const vector = response.data[0].embedding;
+    embedCache[word] = vector;
+    return vector;
 }
 
-function cosine(a, b) {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] ** 2;
-    nb += b[i] ** 2;
-  }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+// Косинусна схожість
+function cosineSimilarity(a, b) {
+    let dot = 0, normA = 0, normB = 0;
+
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-app.post("/similarity", async (req, res) => {
-  const { secret, guess } = req.body;
+// --- Аналіз здогадки ---
+app.post("/guess", async (req, res) => {
+    try {
+        const guess = req.body.word.toLowerCase();
 
-  try {
-    const v1 = await getEmbedding(secret);
-    const v2 = await getEmbedding(guess);
-    const sim = cosine(v1, v2);
+        const secretVector = await getEmbedding(SECRET_WORD);
+        const guessVector = await getEmbedding(guess);
 
-    res.json({ similarity: sim });
+        const similarity = cosineSimilarity(secretVector, guessVector);
 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+        // Перетворюємо схожість на "позицію" як у Contexto
+        const position = Math.floor(1 / (similarity || 0.000001));
+
+        res.json({
+            word: guess,
+            similarity,
+            position
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
 });
 
-app.listen(3000, () => console.log("Server is running"));
+// --- health check ---
+app.get("/", (req, res) => {
+    res.send("AI server is running");
+});
+
+app.listen(3000, () => {
+    console.log("Server running on port 3000");
+});
+
